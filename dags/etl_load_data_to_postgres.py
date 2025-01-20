@@ -48,18 +48,6 @@ def log_etl_process(process_name, status, start_time, end_time=None, postgres_co
         conn = pg_hook.get_conn()
         cursor = conn.cursor()
 
-        # Создание схемы и таблицы логов при необходимости
-        cursor.execute(f"""
-        CREATE SCHEMA IF NOT EXISTS {LOG_SCHEMA};
-        CREATE TABLE IF NOT EXISTS {LOG_SCHEMA}.{LOG_TABLE} (
-            process_name TEXT,
-            status TEXT,
-            start_time TIMESTAMP,
-            end_time TIMESTAMP
-        );
-        """)
-        conn.commit()
-
         # Вставка записи лога
         cursor.execute(f"""
         INSERT INTO {LOG_SCHEMA}.{LOG_TABLE} (process_name, status, start_time, end_time)
@@ -193,6 +181,115 @@ with DAG(
     tags=["ETL", "PostgreSQL"],
     template_searchpath=[DATA_PATH]
 ) as dag:
+    
+    # SQL запросы для создания схем и таблиц
+    create_schema_and_tables_sql = """
+    -- Создание схемы LOGS
+    CREATE SCHEMA IF NOT EXISTS LOGS;
+
+    -- Таблица LOGS.ETL_LOGS
+    CREATE TABLE IF NOT EXISTS LOGS.ETL_LOGS (
+        log_id SERIAL PRIMARY KEY,
+        process_name VARCHAR(100) NOT NULL,
+        start_time TIMESTAMP NOT NULL,
+        end_time TIMESTAMP,
+        records_processed INTEGER,
+        status VARCHAR(20) NOT NULL,
+        additional_info TEXT
+    );
+
+    -- Создание схемы DS
+    CREATE SCHEMA IF NOT EXISTS DS;
+
+    -- Таблица DS.FT_BALANCE_F
+    CREATE TABLE IF NOT EXISTS DS.FT_BALANCE_F (
+        on_date DATE NOT NULL,
+        account_rk NUMERIC NOT NULL,
+        currency_rk NUMERIC,
+        balance_out REAL,
+        PRIMARY KEY (on_date, account_rk)
+    );
+
+    -- Таблица DS.FT_POSTING_F
+    CREATE TABLE IF NOT EXISTS DS.FT_POSTING_F (
+        oper_date DATE NOT NULL,
+        credit_account_rk NUMERIC NOT NULL,
+        debet_account_rk NUMERIC NOT NULL,
+        credit_amount REAL,
+        debet_amount REAL
+    );
+
+    -- Таблица DS.MD_ACCOUNT_D
+    CREATE TABLE IF NOT EXISTS DS.MD_ACCOUNT_D (
+        data_actual_date DATE NOT NULL,
+        data_actual_end_date DATE NOT NULL,
+        account_rk NUMERIC NOT NULL,
+        account_number VARCHAR(20) NOT NULL,
+        char_type CHAR(1) NOT NULL,
+        currency_rk NUMERIC NOT NULL,
+        currency_code VARCHAR(3) NOT NULL,
+        PRIMARY KEY (data_actual_date, account_rk)
+    );
+
+    -- Таблица DS.MD_CURRENCY_D
+    CREATE TABLE IF NOT EXISTS DS.MD_CURRENCY_D (
+        currency_rk NUMERIC NOT NULL,
+        data_actual_date DATE NOT NULL,
+        data_actual_end_date DATE,
+        currency_code VARCHAR(3),
+        code_iso_char VARCHAR(3),
+        PRIMARY KEY (currency_rk, data_actual_date)
+    );
+
+    -- Таблица DS.MD_EXCHANGE_RATE_D
+    CREATE TABLE IF NOT EXISTS DS.MD_EXCHANGE_RATE_D (
+        data_actual_date DATE NOT NULL,
+        data_actual_end_date DATE,
+        currency_rk NUMERIC NOT NULL,
+        reduced_cource REAL,
+        code_iso_num VARCHAR(3),
+        PRIMARY KEY (data_actual_date, currency_rk)
+    );
+
+    -- Таблица DS.MD_LEDGER_ACCOUNT_S
+    CREATE TABLE IF NOT EXISTS DS.MD_LEDGER_ACCOUNT_S (
+        chapter CHAR(1),
+        chapter_name VARCHAR(16),
+        section_number INTEGER,
+        section_name VARCHAR(22),
+        subsection_name VARCHAR(21),
+        ledger1_account INTEGER,
+        ledger1_account_name VARCHAR(47),
+        ledger_account INTEGER NOT NULL,
+        ledger_account_name VARCHAR(153),
+        characteristic CHAR(1),
+        is_resident INTEGER,
+        is_reserve INTEGER,
+        is_reserved INTEGER,
+        is_loan INTEGER,
+        is_reserved_assets INTEGER,
+        is_overdue INTEGER,
+        is_interest INTEGER,
+        pair_account VARCHAR(5),
+        start_date DATE NOT NULL,
+        end_date DATE,
+        is_rub_only INTEGER,
+        min_term VARCHAR(1),
+        min_term_measure VARCHAR(1),
+        max_term VARCHAR(1),
+        max_term_measure VARCHAR(1),
+        ledger_acc_full_name_translit VARCHAR(1),
+        is_revaluation VARCHAR(1),
+        is_correct VARCHAR(1)
+    );
+    """
+
+    # Создание задач для создания схем и таблиц
+    create_schema_and_tables_task = SQLExecuteQueryOperator(
+        task_id="create_schemas_and_tables",
+        sql=create_schema_and_tables_sql,
+        conn_id=my_db_conn,
+    )
 
     processing_tasks = []
     for file_name in FILES_TO_PROCESS:
@@ -202,3 +299,5 @@ with DAG(
             op_args=[file_name],
         )
         processing_tasks.append(task)
+
+    create_schema_and_tables_task >> processing_tasks
